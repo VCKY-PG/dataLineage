@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SQL Data Model Visualization (Oracle Style)</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        .box { 
+            stroke: black; 
+            stroke-width: 1px; 
+            fill: white; 
+        }
+        .header { 
+            fill: #7d5f8f; 
+            stroke: black; 
+            stroke-width: 1px; 
+        }
+        .title { 
+            font-weight: bold; 
+            font-size: 14px; 
+            font-family: Arial, sans-serif; 
+        }
+        .column { 
+            font-size: 12px; 
+            font-family: Arial, sans-serif; 
+        }
+        .link { 
+            stroke: gray; 
+            stroke-width: 2px; 
+        }
+        .link-label { 
+            font-size: 10px; 
+            font-family: Arial, sans-serif; 
+            fill: gray; 
+        }
+        svg { 
+            border: 1px solid #ccc; 
+            background: #f9f9f9; 
+        }
+    </style>
+</head>
+<body>
+    <svg width="1200" height="800"></svg>
+    <script>
+        const svg = d3.select("svg"),
+              width = +svg.attr("width"),
+              height = +svg.attr("height");
+
+        const simulation = d3.forceSimulation()
+            .force("link", d3.forceLink().id(d => d.id).distance(250))
+            .force("charge", d3.forceManyBody().strength(-600))
+            .force("center", d3.forceCenter(width / 2, height / 2));
+
+        d3.json("sql_data.json").then(data => {
+            // Prepare nodes
+            const nodes = Object.keys(data.tables).map(table => {
+                const columns = data.tables[table];
+                const maxTextLength = Math.max(table.length, ...columns.map(c => c.length));
+                return {
+                    id: table,
+                    columns: columns,
+                    width: Math.max(150, maxTextLength * 8 + 20), // Minimum width 150px
+                    headerHeight: 30, // Fixed height for header
+                    columnHeight: columns.length * 20 + 10 // 20px per column + padding
+                };
+            });
+
+            // Prepare links
+            const links = data.joins.map(join => {
+                const source = data.aliases[join[0]];
+                const target = data.aliases[join[1]];
+                console.log(`Join: ${join[0]} -> ${join[1]} mapped to ${source} -> ${target}`);
+                return { source, target, condition: join[2] };
+            });
+
+            console.log("Nodes:", nodes);
+            console.log("Links:", links);
+
+            // Draw links
+            const link = svg.append("g")
+                .attr("class", "links")
+                .selectAll("line")
+                .data(links)
+                .enter().append("line")
+                .attr("class", "link");
+
+            const linkLabel = svg.append("g")
+                .attr("class", "link-labels")
+                .selectAll("text")
+                .data(links)
+                .enter().append("text")
+                .text(d => d.condition)
+                .attr("class", "link-label")
+                .attr("text-anchor", "middle");
+
+            // Draw nodes
+            const node = svg.append("g")
+                .attr("class", "nodes")
+                .selectAll(".node")
+                .data(nodes)
+                .enter().append("g")
+                .attr("class", "node")
+                .call(d3.drag()
+                    .on("start", dragstarted)
+                    .on("drag", dragged)
+                    .on("end", dragended));
+
+            // Header rectangle
+            node.append("rect")
+                .attr("class", "header")
+                .attr("width", d => d.width)
+                .attr("height", d => d.headerHeight)
+                .attr("x", d => -d.width / 2)
+                .attr("y", d => -d.headerHeight - d.columnHeight / 2); // Position above columns
+
+            // Body rectangle
+            node.append("rect")
+                .attr("class", "box")
+                .attr("width", d => d.width)
+                .attr("height", d => d.columnHeight)
+                .attr("x", d => -d.width / 2)
+                .attr("y", d => -d.columnHeight / 2); // Center columns below header
+
+            // Table name (title)
+            node.append("text")
+                .attr("class", "title")
+                .attr("x", 0)
+                .attr("y", d => -d.headerHeight - d.columnHeight / 2 + d.headerHeight / 2) // Center in header
+                .attr("dy", "0.35em") // Vertical centering tweak
+                .attr("text-anchor", "middle")
+                .text(d => d.id);
+
+            // Columns
+            node.each(function(d) {
+                const g = d3.select(this);
+                d.columns.forEach((column, i) => {
+                    g.append("text")
+                        .attr("class", "column")
+                        .attr("x", -d.width / 2 + 10) // Left-aligned with padding
+                        .attr("y", -d.columnHeight / 2 + 15 + i * 20) // Position below header
+                        .text(column);
+                });
+            });
+
+            simulation.nodes(nodes).on("tick", ticked);
+            simulation.force("link").links(links);
+
+            function ticked() {
+                link
+                    .attr("x1", d => d.source.x)
+                    .attr("y1", d => d.source.y + (d.source.headerHeight - d.source.columnHeight) / 2)
+                    .attr("x2", d => d.target.x)
+                    .attr("y2", d => d.target.y + (d.target.headerHeight - d.target.columnHeight) / 2);
+
+                linkLabel
+                    .attr("x", d => (d.source.x + d.target.x) / 2)
+                    .attr("y", d => (d.source.y + d.target.y) / 2);
+
+                node
+                    .attr("transform", d => `translate(${d.x},${d.y})`);
+            }
+
+            function dragstarted(event, d) {
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                d.fx = d.x;
+                d.fy = d.y;
+            }
+
+            function dragged(event, d) {
+                d.fx = event.x;
+                d.fy = event.y;
+            }
+
+            function dragended(event, d) {
+                if (!event.active) simulation.alphaTarget(0);
+                d.fx = null;
+                d.fy = null;
+            }
+        }).catch(error => console.error("Error loading JSON:", error));
+    </script>
+</body>
+</html>
