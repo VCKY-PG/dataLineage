@@ -1,40 +1,47 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>SQL Data Model Visualization (Oracle Style)</title>
+    <title>SQL Data Model Visualization (Horizontal DAG Style)</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
         .box { 
-            stroke: black; 
+            stroke: #ccc; 
             stroke-width: 1px; 
             fill: white; 
+            rx: 5px; 
+            filter: url(#shadow); 
         }
         .header { 
-            fill: #7d5f8f; 
-            stroke: black; 
+            stroke: #ccc; 
             stroke-width: 1px; 
+            rx: 5px; 
         }
         .title { 
             font-weight: bold; 
             font-size: 14px; 
-            font-family: Arial, sans-serif; 
+            font-family: 'Segoe UI', Arial, sans-serif; 
+            fill: white; 
         }
         .column { 
             font-size: 12px; 
-            font-family: Arial, sans-serif; 
+            font-family: 'Segoe UI', Arial, sans-serif; 
+            fill: #333; 
         }
         .link { 
-            stroke: gray; 
+            stroke: #6c757d; 
             stroke-width: 2px; 
         }
-        .link-label { 
-            font-size: 10px; 
-            font-family: Arial, sans-serif; 
-            fill: gray; 
-        }
         svg { 
-            border: 1px solid #ccc; 
-            background: #f9f9f9; 
+            border: 1px solid #e9ecef; 
+            background: #f8f9fa; 
+        }
+        .node:hover .box { 
+            stroke: #007bff; 
+            stroke-width: 2px; 
+        }
+        .node:hover .header { 
+            stroke: #007bff; 
+            stroke-width: 2px; 
         }
     </style>
 </head>
@@ -45,52 +52,109 @@
               width = +svg.attr("width"),
               height = +svg.attr("height");
 
-        const simulation = d3.forceSimulation()
-            .force("link", d3.forceLink().id(d => d.id).distance(250))
-            .force("charge", d3.forceManyBody().strength(-600))
-            .force("center", d3.forceCenter(width / 2, height / 2));
+        // Define arrowhead marker
+        svg.append("defs").append("marker")
+            .attr("id", "arrow")
+            .attr("viewBox", "0 -5 10 10")
+            .attr("refX", 10)
+            .attr("refY", 0)
+            .attr("markerWidth", 6)
+            .attr("markerHeight", 6)
+            .attr("orient", "auto")
+            .append("path")
+            .attr("d", "M0,-5L10,0L0,5")
+            .attr("fill", "#6c757d");
+
+        // Define shadow filter
+        svg.append("defs").append("filter")
+            .attr("id", "shadow")
+            .append("feDropShadow")
+            .attr("dx", "2")
+            .attr("dy", "2")
+            .attr("stdDeviation", "2")
+            .attr("flood-color", "#000000")
+            .attr("flood-opacity", "0.2");
 
         d3.json("sql_data.json").then(data => {
+            // Ensure all tables in lineage are in tables
+            const allTables = new Set(Object.keys(data.tables));
+            data.lineage.forEach(([source, target]) => {
+                allTables.add(data.aliases[source] || source);
+                allTables.add(data.aliases[target] || target);
+            });
+            allTables.forEach(table => {
+                if (!data.tables[table]) {
+                    data.tables[table] = [];
+                    console.log(`Added missing table: ${table}`);
+                }
+            });
+
             // Prepare nodes
-            const nodes = Object.keys(data.tables).map(table => {
-                const columns = data.tables[table];
+            const executionOrder = ["user_activity", "daily_visits", "daily_purchases", "engagement", "user_summary", "main_query"];
+            const nodes = executionOrder.map(table => {
+                const columns = data.tables[table] || [];
                 const maxTextLength = Math.max(table.length, ...columns.map(c => c.length));
+                let headerColor;
+                if (table === "user_activity") headerColor = "#28a745"; // Source: Green
+                else if (table === "main_query") headerColor = "#6f42c1"; // Final: Purple
+                else headerColor = "#007bff"; // CTEs: Blue
                 return {
                     id: table,
                     columns: columns,
-                    width: Math.max(150, maxTextLength * 8 + 20), // Minimum width 150px
-                    headerHeight: 30, // Fixed height for header
-                    columnHeight: columns.length * 20 + 10 // 20px per column + padding
+                    width: Math.max(150, maxTextLength * 8 + 20),
+                    headerHeight: 30,
+                    columnHeight: columns.length * 20 + 10,
+                    headerColor
                 };
             });
 
+            // Deduplicate and filter lineage (remove user_activity -> main_query)
+            const lineageMap = new Map();
+            data.lineage.forEach(([source, target, condition]) => {
+                const resolvedSource = data.aliases[source] || source;
+                const resolvedTarget = data.aliases[target] || target;
+                if (resolvedSource === "user_activity" && resolvedTarget === "main_query") return; // Skip this link
+                const key = `${resolvedSource}-${resolvedTarget}`;
+                if (!lineageMap.has(key)) {
+                    lineageMap.set(key, { source: resolvedSource, target: resolvedTarget, condition });
+                }
+            });
+            const uniqueLineage = Array.from(lineageMap.values());
+            console.log("Unique Lineage:", uniqueLineage);
+
+            // Position nodes horizontally
+            const horizontalSpacing = 200;
+            nodes.forEach((d, i) => {
+                d.x = 100 + i * horizontalSpacing; // Left-to-right, starting at 100
+                d.y = height / 2; // Center vertically
+            });
+
             // Prepare links
-            const links = data.joins.map(join => {
-                const source = data.aliases[join[0]];
-                const target = data.aliases[join[1]];
-                console.log(`Join: ${join[0]} -> ${join[1]} mapped to ${source} -> ${target}`);
-                return { source, target, condition: join[2] };
+            const linkData = uniqueLineage.map(link => {
+                const source = nodes.find(n => n.id === link.source);
+                const target = nodes.find(n => n.id === link.target);
+                console.log(`Link: ${link.source} -> ${link.target}`);
+                return { source, target, condition: link.condition };
             });
 
             console.log("Nodes:", nodes);
-            console.log("Links:", links);
+            console.log("Links:", linkData);
 
-            // Draw links
+            // Draw links with arrows (no labels as per image)
             const link = svg.append("g")
                 .attr("class", "links")
-                .selectAll("line")
-                .data(links)
-                .enter().append("line")
-                .attr("class", "link");
-
-            const linkLabel = svg.append("g")
-                .attr("class", "link-labels")
-                .selectAll("text")
-                .data(links)
-                .enter().append("text")
-                .text(d => d.condition)
-                .attr("class", "link-label")
-                .attr("text-anchor", "middle");
+                .selectAll("path")
+                .data(linkData)
+                .enter().append("path")
+                .attr("class", "link")
+                .attr("d", d => {
+                    const sx = d.source.x + d.source.width / 2; // Right edge of source
+                    const sy = d.source.y;
+                    const tx = d.target.x - d.target.width / 2; // Left edge of target
+                    const ty = d.target.y;
+                    return `M${sx},${sy} L${tx},${ty}`;
+                })
+                .attr("marker-end", "url(#arrow)");
 
             // Draw nodes
             const node = svg.append("g")
@@ -99,10 +163,7 @@
                 .data(nodes)
                 .enter().append("g")
                 .attr("class", "node")
-                .call(d3.drag()
-                    .on("start", dragstarted)
-                    .on("drag", dragged)
-                    .on("end", dragended));
+                .attr("transform", d => `translate(${d.x},${d.y})`);
 
             // Header rectangle
             node.append("rect")
@@ -110,7 +171,8 @@
                 .attr("width", d => d.width)
                 .attr("height", d => d.headerHeight)
                 .attr("x", d => -d.width / 2)
-                .attr("y", d => -d.headerHeight - d.columnHeight / 2); // Position above columns
+                .attr("y", d => -d.headerHeight - d.columnHeight / 2)
+                .style("fill", d => d.headerColor);
 
             // Body rectangle
             node.append("rect")
@@ -118,14 +180,14 @@
                 .attr("width", d => d.width)
                 .attr("height", d => d.columnHeight)
                 .attr("x", d => -d.width / 2)
-                .attr("y", d => -d.columnHeight / 2); // Center columns below header
+                .attr("y", d => -d.columnHeight / 2);
 
             // Table name (title)
             node.append("text")
                 .attr("class", "title")
                 .attr("x", 0)
-                .attr("y", d => -d.headerHeight - d.columnHeight / 2 + d.headerHeight / 2) // Center in header
-                .attr("dy", "0.35em") // Vertical centering tweak
+                .attr("y", d => -d.headerHeight - d.columnHeight / 2 + d.headerHeight / 2)
+                .attr("dy", "0.35em")
                 .attr("text-anchor", "middle")
                 .text(d => d.id);
 
@@ -135,46 +197,18 @@
                 d.columns.forEach((column, i) => {
                     g.append("text")
                         .attr("class", "column")
-                        .attr("x", -d.width / 2 + 10) // Left-aligned with padding
-                        .attr("y", -d.columnHeight / 2 + 15 + i * 20) // Position below header
+                        .attr("x", -d.width / 2 + 10)
+                        .attr("y", -d.columnHeight / 2 + 15 + i * 20)
                         .text(column);
                 });
             });
 
-            simulation.nodes(nodes).on("tick", ticked);
-            simulation.force("link").links(links);
+            // Tooltips
+            node.append("title")
+                .text(d => `${d.id}\nColumns: ${d.columns.join(", ")}`);
 
-            function ticked() {
-                link
-                    .attr("x1", d => d.source.x)
-                    .attr("y1", d => d.source.y + (d.source.headerHeight - d.source.columnHeight) / 2)
-                    .attr("x2", d => d.target.x)
-                    .attr("y2", d => d.target.y + (d.target.headerHeight - d.target.columnHeight) / 2);
-
-                linkLabel
-                    .attr("x", d => (d.source.x + d.target.x) / 2)
-                    .attr("y", d => (d.source.y + d.target.y) / 2);
-
-                node
-                    .attr("transform", d => `translate(${d.x},${d.y})`);
-            }
-
-            function dragstarted(event, d) {
-                if (!event.active) simulation.alphaTarget(0.3).restart();
-                d.fx = d.x;
-                d.fy = d.y;
-            }
-
-            function dragged(event, d) {
-                d.fx = event.x;
-                d.fy = event.y;
-            }
-
-            function dragended(event, d) {
-                if (!event.active) simulation.alphaTarget(0);
-                d.fx = null;
-                d.fy = null;
-            }
+            link.append("title")
+                .text(d => `${d.source.id} -> ${d.target.id}\nCondition: ${d.condition}`);
         }).catch(error => console.error("Error loading JSON:", error));
     </script>
 </body>
