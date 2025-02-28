@@ -3,9 +3,9 @@ import json
 import sys
 
 def parse_sql(query):
-    schema = {}  # {table_name: [columns]}
-    joins = []   # [(table1, table2, condition)]
-    aliases = {} # {alias: table_name}
+    schema = {}       # {table_name: [columns]}
+    lineage = []      # [(source, target, condition)] - all dependencies
+    aliases = {}      # {alias: table_name}
 
     # Normalize query
     query = " ".join(query.split()).lower()
@@ -19,9 +19,9 @@ def parse_sql(query):
         aliases[alias] = table
         return table, alias
 
-    # Extract FROM clause and joins
-    def extract_from_clause(from_text, context=""):
-        print(f"Processing FROM in {context}: {from_text}")
+    # Extract FROM clause and lineage
+    def extract_from_clause(from_text, target_table, context=""):
+        print(f"Processing FROM in {context} for target {target_table}: {from_text}")
         # Match table [alias] and optional JOINs
         pattern = r'([a-z_]\w*(?:\s+[a-z_]\w*)?)(?:\s*(left\s+)?join\s+([a-z_]\w*(?:\s+[a-z_]\w*)?)\s+on\s+(.+?)(?=\s*(?:left\s+)?join|where|group by|order by|$))?'
         matches = re.finditer(pattern, from_text, re.DOTALL)
@@ -34,19 +34,22 @@ def parse_sql(query):
                 main_table, main_alias = parse_table_alias(main_table_text)
                 if main_table not in schema:
                     schema[main_table] = []
+                lineage.append((main_table, target_table, "FROM"))  # Implicit lineage
                 prev_alias = main_alias
             if join_table_text and condition:
                 join_table, join_alias = parse_table_alias(join_table_text)
                 if join_table not in schema:
                     schema[join_table] = []
-                joins.append((prev_alias, join_alias, condition.strip()))
-                print(f"Join detected: {prev_alias} -> {join_alias} ON {condition.strip()}")
+                lineage.append((prev_alias, join_alias, condition.strip()))  # Explicit join
+                print(f"Lineage detected: {prev_alias} -> {join_alias} ON {condition.strip()}")
                 prev_alias = join_alias
-        if not matches:  # Handle single table with no joins
+        if not list(matches):  # Single table case
             table_text = from_text.strip()
             table, alias = parse_table_alias(table_text)
             if table not in schema:
                 schema[table] = []
+            lineage.append((table, target_table, "FROM"))
+            print(f"Lineage detected: {table} -> {target_table} (FROM)")
 
     # Parse CTEs
     cte_blocks = []
@@ -71,7 +74,7 @@ def parse_sql(query):
             schema[cte_name] = columns
         from_match = re.search(r'from\s+(.+?)(?=\s*(where|group by|order by|$))', cte_body, re.DOTALL)
         if from_match:
-            extract_from_clause(from_match.group(1), f"CTE {cte_name}")
+            extract_from_clause(from_match.group(1), cte_name, f"CTE {cte_name}")
 
     # Parse main query
     main_query = query.split('select', 1)[-1]
@@ -83,7 +86,7 @@ def parse_sql(query):
 
     from_match = re.search(r'from\s+(.+?)(?=\s*(where|group by|order by|$))', main_query, re.DOTALL)
     if from_match:
-        extract_from_clause(from_match.group(1), "main query")
+        extract_from_clause(from_match.group(1), "main_query", "main query")
         for col in columns:
             if '.' in col:
                 alias, col_name = col.split('.', 1)
@@ -93,7 +96,7 @@ def parse_sql(query):
                 if col_name not in schema[table]:
                     schema[table].append(col_name)
 
-    return schema, joins, aliases
+    return schema, lineage, aliases
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -109,21 +112,21 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print(f"Parsing SQL from file '{sql_file_path}':\n{sql_query}")
-    schema, joins, aliases = parse_sql(sql_query)
+    schema, lineage, aliases = parse_sql(sql_query)
 
     print("\nData Model (Schema):")
     for table, columns in schema.items():
         print(f"{table}: {columns}")
     
-    print("\nJoins:")
-    for join in joins:
-        print(f"{join[0]} -> {join[1]} ON {join[2]}")
+    print("\nLineage:")
+    for link in lineage:
+        print(f"{link[0]} -> {link[1]} ({link[2]})")
 
     print("\nAliases:")
     for alias, table in aliases.items():
         print(f"{alias}: {table}")
 
-    data = {"tables": schema, "joins": joins, "aliases": aliases}
+    data = {"tables": schema, "lineage": lineage, "aliases": aliases}
     with open("sql_data.json", "w") as f:
         json.dump(data, f, indent=2)
     print("\nSaved to sql_data.json")
